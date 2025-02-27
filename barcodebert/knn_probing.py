@@ -10,6 +10,7 @@ import sklearn.metrics
 import torch
 import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
+import faiss
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
 
@@ -171,8 +172,21 @@ def run(config):
 
     # Fit ---------------------------------------------------------------------
     t_start_train = time.time()
-    clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric)
-    clf.fit(X, y)
+
+    faiss_metric = None
+
+    if config.metric == "cosine":
+        faiss_metric = faiss.METRIC_INNER_PRODUCT
+        faiss.normalize_L2(X)
+        faiss.normalize_L2(X_unseen)
+    elif config.metric == "euclidean":
+        faiss_metric = faiss.METRIC_L2
+    elif config.metirc in ["manhattan", "l1", "cityblock"]:
+        faiss_metric = faiss.METRIC_L1
+
+    faiss_index = faiss.index_factory(X.shape[1], "Flat", faiss_metric)
+    faiss_index.add(X.astype("float32"))
+
     timing_stats["train"] = time.time() - t_start_train
 
     # Evaluate ----------------------------------------------------------------
@@ -180,7 +194,13 @@ def run(config):
     # Create results dictionary
     results = {}
     for partition_name, X_part, y_part in [("Train", X, y), ("Unseen", X_unseen, y_unseen)]:
-        y_pred = clf.predict(X_part)
+        _, indices = faiss_index.search(X_part.astype("float32"), config.n_neighbors)
+        y_pred = []
+        for neighbors in indices:
+            neighbor_labels = [y[i] for i in neighbors]
+            prediction = max(set(neighbor_labels), key=neighbor_labels.count)
+            y_pred.append(prediction)
+
         res_part = {}
         res_part["count"] = len(y_part)
         # Note that these evaluation metrics have all been converted to percentages
