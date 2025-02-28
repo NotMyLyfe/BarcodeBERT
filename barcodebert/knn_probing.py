@@ -9,7 +9,8 @@ import pandas as pd
 import sklearn.metrics
 import torch
 import torch.optim
-from sklearn.neighbors import KNeighborsClassifier
+from annoy import AnnoyIndex
+from sklearn.preprocessing import normalize
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
 
@@ -171,8 +172,18 @@ def run(config):
 
     # Fit ---------------------------------------------------------------------
     t_start_train = time.time()
-    clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric)
-    clf.fit(X, y)
+
+    annoy_config = "dot" if config.metric == "cosine" else config.metric
+    
+    if config.metric == "cosine":
+        X = normalize(X, axis=1)
+        X_unseen = normalize(X_unseen, axis=1)
+
+    clf = AnnoyIndex(X.shape[1], metric=annoy_config)
+
+    for i, x in enumerate(X):
+        clf.add_item(i, x)
+
     timing_stats["train"] = time.time() - t_start_train
 
     # Evaluate ----------------------------------------------------------------
@@ -180,7 +191,13 @@ def run(config):
     # Create results dictionary
     results = {}
     for partition_name, X_part, y_part in [("Train", X, y), ("Unseen", X_unseen, y_unseen)]:
-        y_pred = clf.predict(X_part)
+        y_pred = []
+        for x in X_part:
+            neighbors = clf.get_nns_by_vector(x, config.n_neighbors)
+            neighbor_labels = [y[n] for n in neighbors]
+            prediction = max(set(neighbor_labels), key=neighbor_labels.count)
+            y_pred.append(prediction)
+
         res_part = {}
         res_part["count"] = len(y_part)
         # Note that these evaluation metrics have all been converted to percentages
