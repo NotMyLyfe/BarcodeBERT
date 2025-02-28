@@ -171,7 +171,7 @@ def run(config):
 
     # Fit ---------------------------------------------------------------------
     t_start_train = time.time()
-    clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric)
+    clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric, algorithm=config.algorithm)
     clf.fit(X, y)
     timing_stats["train"] = time.time() - t_start_train
 
@@ -305,6 +305,12 @@ def get_parser():
         default="cosine",
         type=str,
         help="Distance metric to use for kNN. Default: %(default)s",
+    )
+    group.add_argument(
+        "--algorithm",
+        default="auto",
+        type=str,
+        help="Algorithm to use for kNN. Default: %(default)s",
     )
     return parser
 
