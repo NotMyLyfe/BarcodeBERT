@@ -184,6 +184,8 @@ def run(config):
     for i, x in enumerate(X):
         clf.add_item(i, x)
 
+    clf.build(config.n_trees)
+
     timing_stats["train"] = time.time() - t_start_train
 
     # Evaluate ----------------------------------------------------------------
@@ -322,6 +324,13 @@ def get_parser():
         default="cosine",
         type=str,
         help="Distance metric to use for kNN. Default: %(default)s",
+    )
+    group.add_argument(
+        "--n-trees",
+        "--n_trees",
+        default=10,
+        type=int,
+        help="Number of trees to build for the Annoy index. Default: %(default)s",
     )
     return parser
 
