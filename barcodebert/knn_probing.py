@@ -188,6 +188,10 @@ def run(config):
 
     timing_stats["train"] = time.time() - t_start_train
 
+    running_info = resource.getrusage(resource.RUSAGE_SELF)
+    memory = running_info.ru_maxrss / 1e6
+    print(f"Max memory usage w/ Annoy: {memory} (GB)")
+
     # Evaluate ----------------------------------------------------------------
     t_start_test = time.time()
     # Create results dictionary
