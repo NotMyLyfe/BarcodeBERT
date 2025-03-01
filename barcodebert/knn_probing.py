@@ -181,7 +181,7 @@ def run(config):
         faiss.normalize_L2(X_unseen)
     elif config.metric == "euclidean":
         faiss_metric = faiss.METRIC_L2
-    elif config.metirc in ["manhattan", "l1", "cityblock"]:
+    elif config.metric in ["manhattan", "l1", "cityblock"]:
         faiss_metric = faiss.METRIC_L1
     elif config.metric == "jaccard":
         faiss_metric = faiss.METRIC_Jaccard
