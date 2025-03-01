@@ -183,6 +183,8 @@ def run(config):
         faiss_metric = faiss.METRIC_L2
     elif config.metirc in ["manhattan", "l1", "cityblock"]:
         faiss_metric = faiss.METRIC_L1
+    elif config.metric == "jaccard":
+        faiss_metric = faiss.METRIC_Jaccard
 
     faiss_index = faiss.index_factory(X.shape[1], "Flat", faiss_metric)
     faiss_index.add(X.astype("float32"))
