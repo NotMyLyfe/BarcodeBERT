@@ -187,6 +187,11 @@ def run(config):
         faiss_metric = faiss.METRIC_Jaccard
 
     faiss_index = faiss.index_factory(X.shape[1], "Flat", faiss_metric)
+
+    if torch.cuda.is_available():
+        faiss_gpu_res = faiss.StandardGpuResources()
+        faiss_index = faiss.index_cpu_to_gpu(faiss_gpu_res, 0, faiss_index)
+
     faiss_index.add(X.astype("float32"))
 
     timing_stats["train"] = time.time() - t_start_train
