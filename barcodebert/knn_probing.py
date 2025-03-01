@@ -10,6 +10,7 @@ import sklearn.metrics
 import torch
 import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import normalize
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
 
@@ -171,6 +172,14 @@ def run(config):
 
     # Fit ---------------------------------------------------------------------
     t_start_train = time.time()
+
+    # Cosine not supported with KDTree or BallTree
+    # But would need to approximate cosine with euclidean distance
+    if config.metric == "cosine" and config.algorithm in ["kd_tree", "ball_tree"]:
+        X = normalize(X, axis=1)
+        X_unseen = normalize(X_unseen, axis=1)
+        config.metric = "euclidean"
+
     clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric, algorithm=config.algorithm)
     clf.fit(X, y)
     timing_stats["train"] = time.time() - t_start_train
