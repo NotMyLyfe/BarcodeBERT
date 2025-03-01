@@ -196,6 +196,8 @@ def run(config):
 
     timing_stats["train"] = time.time() - t_start_train
 
+    print("FAISS Memory usage: ", faiss.get_mem_usage_kb() / 1e6, "GB", flush = True)
+
     # Evaluate ----------------------------------------------------------------
     t_start_test = time.time()
     # Create results dictionary
