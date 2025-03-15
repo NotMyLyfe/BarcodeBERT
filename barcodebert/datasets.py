@@ -166,14 +166,15 @@ class DNADataset(Dataset):
         return processed_barcode, label, att_mask
 
 
-def representations_from_df(df, target_level, model, tokenizer, dataset_name):
+def representations_from_df(df, train_df, target_level, model, tokenizer, dataset_name):
 
     orders = df["order_name"].to_numpy()
-    if dataset_name == "CANADA-1.5M":
-        _label_set, y = np.unique(df[target_level], return_inverse=True)
-    elif dataset_name == "BIOSCAN-5M":
-        # _label_set = np.unique(df[target_level])
-        y = df[target_level]
+    if dataset_name in ["CANADA-1.5M", "BIOSCAN-5M"]:
+        y = df[target_level].to_list()
+        labels = train_df[target_level].to_list()
+        label_set = sorted(set(labels))
+        label_pipeline = lambda x: label_set.index(x)
+        y = np.array(list(map(label_pipeline, y)))
     else:
         raise NotImplementedError("Dataset format is not supported. Must be one of CANADA-1.5M or BIOSCAN-5M")
 
