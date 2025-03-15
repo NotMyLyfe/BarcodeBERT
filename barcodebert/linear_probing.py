@@ -76,7 +76,7 @@ def run(config):
             y = [label_set.index(t) for t in targets]
     else:
         train = pd.read_csv(os.path.join(config.data_path, "supervised_train.csv"), sep=",")
-        X, y, train_orders = representations_from_df(train, target_level, model, tokenizer)
+        X, y, train_orders = representations_from_df(train, train, target_level, model, tokenizer)
         file = open(f"{representation_folder}/{fname_base}_train.pkl", "wb")
         pickle.dump((X, y), file)
         file.close()
@@ -92,7 +92,7 @@ def run(config):
 
     else:
         test = pd.read_csv(os.path.join(config.data_path, "supervised_test.csv"), sep=",")
-        X_test, y_test, orders = representations_from_df(test, target_level, model, tokenizer)
+        X_test, y_test, orders = representations_from_df(test, train, target_level, model, tokenizer)
         file = open(f"{representation_folder}/{fname_base}_test.pkl", "wb")
         pickle.dump((X_test, y_test), file)
         file.close()
