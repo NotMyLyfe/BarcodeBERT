@@ -195,26 +195,37 @@ def run(config):
     for partition_name, X_part, y_part in [("Train", X, y), ("Unseen", X_unseen, y_unseen)]:
         prob = clf.predict_proba(X_part)
 
-        # Calibration curve
+        # Reliability diagram and expected calibration error
+        calibration_error = []
+        plt.figure(figsize=(10, 10))
         for i in range(len(classes)):
             prob_i = prob[:, i]
             y_i = y_part == classes[i]
             prob_true, prob_pred = calibration_curve(y_i, prob_i, n_bins=10)
+
+            calibration_error.append(np.mean(np.abs(prob_pred - prob_true)))
+
             plt.plot(prob_pred, prob_true, marker="o", label=f"{partition_name} {classes[i]}")
-            # Save every few iterations
-            if i % 20 == 19:
+            if i % 30 == 29:
                 plt.plot([0, 1], [0, 1], linestyle="--", color="black")
                 plt.xlabel("Mean predicted probability")
                 plt.ylabel("Fraction of positives")
                 plt.legend()
-                plt.savefig(f"./calibration_curve/calibration_curve_{partition_name}_{i // 20}.png")
+                plt.savefig(f"./calibration_curve/calibration_curve_{partition_name}_{i // 30}.png")
                 plt.close()
+                plt.figure(figsize=(10, 10))
 
         plt.plot([0, 1], [0, 1], linestyle="--", color="black")
         plt.xlabel("Mean predicted probability")
         plt.ylabel("Fraction of positives")
         plt.legend()
-        plt.savefig(f"./calibration_curve/calibration_curve_{partition_name}_{len(classes) // 20}.png")
+        plt.savefig(f"./calibration_curve/calibration_curve_{partition_name}_{len(classes) // 30}.png")
+        plt.close()
+
+        plt.hist(calibration_error, bins=50)
+        plt.xlabel("Expected Calibration Error")
+        plt.ylabel("Frequency")
+        plt.savefig(f"./calibration_curve/calibration_error_{partition_name}.png")
         plt.close()
 
         y_pred = clf.predict(X_part)
