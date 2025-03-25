@@ -53,7 +53,14 @@ def run(config):
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
     # Map model parameters to be load to the specified gpu.
-    model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
+    if config.pretrained_checkpoint_path is None and config.finetuned_checkpoint_path is None:
+        raise ValueError("Either --pretrained-checkpoint or --finetuned-checkpoint must be provided.")
+    elif config.pretrained_checkpoint_path is not None and config.finetuned_checkpoint_path is not None:
+        raise ValueError("Only one of --pretrained-checkpoint or --finetuned-checkpoint can be provided.")
+    elif config.pretrained_checkpoint_path is not None:
+        model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
+    elif config.finetuned_checkpoint_path is not None:
+        model, pre_checkpoint = load_pretrained_model(config.finetuned_checkpoint_path, device=device)
     # Override the classifier with an identity function as we only want the embeddings
     model.classifier = nn.Identity()
     model = model.to(device)
@@ -282,8 +289,16 @@ def get_parser():
         default="",
         type=str,
         metavar="PATH",
-        required=True,
         help="Path to pretrained model checkpoint (required).",
+    )
+    group.add_argument(
+        "--finetuned-checkpoint",
+        "--finetuned_checkpoint",
+        dest="finetuned_checkpoint_path",
+        default="",
+        type=str,
+        metavar="PATH",
+        help="Path to finetuned model checkpoint.",
     )
     # kNN args ----------------------------------------------------------------
     group = parser.add_argument_group("kNN parameters")

@@ -88,6 +88,34 @@ def load_pretrained_model(checkpoint_path, device=None):
     return model, ckpt
 
 
+def load_finetuned_model(checkpoint_path, device=None):
+    """
+    Load a finetuned model from a checkpoint file.
+
+    Parameters
+    ----------
+    checkpoint_path : str
+        Path to the finetuned checkpoint file.
+
+    Returns
+    -------
+    model : torch.nn.Module
+        The finetuned model.
+    ckpt : dict
+        The contents of the checkpoint file.
+    """
+    print(f"\nLoading model from {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device)
+
+    from barcodebert.finetuning import ClassificationModel
+
+    model = ClassificationModel(ckpt["config"])
+    model.load_state_dict(remove_extra_pre_fix(ckpt["model"]))
+    model.eval()
+    print(f"Loaded model from {checkpoint_path}")
+    return model, ckpt
+
+
 def load_old_pretrained_model(checkpoint_path, k_mer, device=None):
     """
     Load a pretrained model using the publised format from a checkpoint file.
