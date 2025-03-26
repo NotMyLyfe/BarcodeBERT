@@ -15,7 +15,7 @@ from torchtext.vocab import vocab as build_vocab_from_dict
 
 from barcodebert import utils
 from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_from_df
-from barcodebert.io import load_pretrained_model
+from barcodebert.io import load_pretrained_model, load_finetuned_model
 
 
 def run(config):
@@ -53,14 +53,9 @@ def run(config):
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
     # Map model parameters to be load to the specified gpu.
-    if config.pretrained_checkpoint_path is None and config.finetuned_checkpoint_path is None:
-        raise ValueError("Either --pretrained-checkpoint or --finetuned-checkpoint must be provided.")
-    elif config.pretrained_checkpoint_path is not None and config.finetuned_checkpoint_path is not None:
-        raise ValueError("Only one of --pretrained-checkpoint or --finetuned-checkpoint can be provided.")
-    elif config.pretrained_checkpoint_path is not None:
-        model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
-    elif config.finetuned_checkpoint_path is not None:
-        model, pre_checkpoint = load_pretrained_model(config.finetuned_checkpoint_path, device=device)
+    model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
+    if config.finetuned_checkpoint_path is not None:
+        model, pre_checkpoint = load_finetuned_model(config.finetuned_checkpoint_path, model, device=device)
     # Override the classifier with an identity function as we only want the embeddings
     model.classifier = nn.Identity()
     model = model.to(device)
@@ -289,13 +284,14 @@ def get_parser():
         default="",
         type=str,
         metavar="PATH",
+        required=True,
         help="Path to pretrained model checkpoint (required).",
     )
     group.add_argument(
         "--finetuned-checkpoint",
         "--finetuned_checkpoint",
         dest="finetuned_checkpoint_path",
-        default="",
+        default=None,
         type=str,
         metavar="PATH",
         help="Path to finetuned model checkpoint.",

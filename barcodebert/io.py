@@ -88,7 +88,7 @@ def load_pretrained_model(checkpoint_path, device=None):
     return model, ckpt
 
 
-def load_finetuned_model(checkpoint_path, device=None):
+def load_finetuned_model(checkpoint_path, pretrained_model, device=None):
     """
     Load a finetuned model from a checkpoint file.
 
@@ -109,7 +109,9 @@ def load_finetuned_model(checkpoint_path, device=None):
 
     from barcodebert.finetuning import ClassificationModel
 
-    model = ClassificationModel(ckpt["config"])
+    num_labels = ckpt["model"]["module.classifier.bias"].shape[0]
+
+    model = ClassificationModel(pretrained_model, num_labels=num_labels)
     model.load_state_dict(remove_extra_pre_fix(ckpt["model"]))
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
