@@ -112,7 +112,8 @@ def load_finetuned_model(checkpoint_path, pretrained_model, device=None):
     num_labels = ckpt["model"]["module.classifier.bias"].shape[0]
 
     model = ClassificationModel(pretrained_model, num_labels=num_labels)
-    model.load_state_dict(remove_extra_pre_fix(ckpt["model"]))
+    model.load_state_dict(remove_extra_pre_fix(ckpt["model"]), strict=False)
+    model.device = device
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
     return model, ckpt
