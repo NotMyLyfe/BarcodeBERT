@@ -214,7 +214,10 @@ def run(config):
     print(f"The code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
 
     with open("KNN_RESULTS.txt", "a") as f:
-        model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
+        if config.pretrained_checkpoint_path is not None:
+            model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
+        else:
+            model_name = os.path.join(*os.path.split(config.finetuned_checkpoint_path)[-2:])
         f.write(f"\n{model_name} \t {acc:.4f}")
 
     timing_stats["overall"] = time.time() - t_start
