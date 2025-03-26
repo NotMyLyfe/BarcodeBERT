@@ -23,6 +23,17 @@ def remove_extra_pre_fix(state_dict):
     return new_state_dict
 
 
+def remove_extra_base_pre_fix(state_dict):
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith("module."):
+            key = key[7:]
+        if key.startswith("base_model."):
+            key = key[11:]
+        new_state_dict[key] = value
+    return new_state_dict
+
+
 def ddp_setup(rank: int, world_size: int):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"

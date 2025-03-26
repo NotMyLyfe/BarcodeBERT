@@ -9,7 +9,7 @@ from inspect import getsourcefile
 import torch
 from transformers import BertConfig, BertForMaskedLM, BertForTokenClassification
 
-from .utils import remove_extra_pre_fix
+from .utils import remove_extra_pre_fix, remove_extra_base_pre_fix
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(getsourcefile(lambda: 0)))
 
@@ -147,7 +147,7 @@ def load_finetuned_as_pretrained(checkpoint_path, device=None):
     del ckpt["model"]["module.classifier.weight"]
     del ckpt["model"]["module.classifier.bias"]
 
-    model.load_state_dict(remove_extra_pre_fix(ckpt["model"]), strict=False)
+    model.load_state_dict(remove_extra_base_pre_fix(ckpt["model"]), strict=False)
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
     return model, ckpt
