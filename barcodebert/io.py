@@ -119,6 +119,40 @@ def load_finetuned_model(checkpoint_path, pretrained_model, device=None):
     return model, ckpt
 
 
+def load_finetuned_as_pretrained(checkpoint_path, device=None):
+    """
+    Load a finetuned model from a checkpoint file.
+
+    Parameters
+    ----------
+    checkpoint_path : str
+        Path to the finetuned checkpoint file.
+
+    Returns
+    -------
+    model : torch.nn.Module
+        The finetuned model.
+    ckpt : dict
+        The contents of the checkpoint file.
+    """
+    print(f"\nLoading model from {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device)
+
+    assert "bert_config" in ckpt  # You may be trying to load an old checkpoint
+
+    bert_config = BertConfig(**ckpt["bert_config"])
+    model = BertForTokenClassification(bert_config)
+
+    # Classifier layer needs to be removed
+    del ckpt["model"]["module.classifier.weight"]
+    del ckpt["model"]["module.classifier.bias"]
+
+    model.load_state_dict(remove_extra_pre_fix(ckpt["model"]), strict=False)
+    model.eval()
+    print(f"Loaded model from {checkpoint_path}")
+    return model, ckpt
+
+
 def load_old_pretrained_model(checkpoint_path, k_mer, device=None):
     """
     Load a pretrained model using the publised format from a checkpoint file.
