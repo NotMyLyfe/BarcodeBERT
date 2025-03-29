@@ -10,7 +10,7 @@ import sklearn.metrics
 import torch
 import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.calibration import calibration_curve
+from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
 from matplotlib import pyplot as plt
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
@@ -52,7 +52,7 @@ def run(config):
     print()
     print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
 
-    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+    device = torch.device("cuda") if torch.cuda.is_available() else "mps"
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
     # Map model parameters to be load to the specified gpu.
@@ -128,6 +128,7 @@ def run(config):
         tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len, bpe_path=config.bpe_path)
 
     df_train = pd.read_csv(os.path.join(config.data_dir, "supervised_train.csv"))
+    df_val = pd.read_csv(os.path.join(config.data_dir, "supervised_val.csv"))
     df_test = pd.read_csv(os.path.join(config.data_dir, "unseen.csv"))
 
     if config.taxon.lower() == "bin":
@@ -149,6 +150,10 @@ def run(config):
     print("Generating embeddings for test set", flush=True)
     X_unseen, y_unseen, orders = representations_from_df(
         df_test, df_train, config.target_level, model, tokenizer, config.dataset_name
+    )
+    print("Generating embeddings for validation set", flush=True)
+    X_val, y_val, val_orders = representations_from_df(
+        df_val, df_train, config.target_level, model, tokenizer, config.dataset_name
     )
     print("Generating embeddings for train set", flush=True)
     X, y, train_orders = representations_from_df(
@@ -186,65 +191,95 @@ def run(config):
     clf.fit(X, y)
     timing_stats["train"] = time.time() - t_start_train
 
-    classes = clf.classes_
+    cal_clf = CalibratedClassifierCV(clf, method="isotonic", cv="prefit")
+    cal_clf.fit(X_val, y_val)
+
+    classes = cal_clf.classes_
 
     # Evaluate ----------------------------------------------------------------
     t_start_test = time.time()
     # Create results dictionary
     results = {}
+
+    os.makedirs("calibration_curve/Train", exist_ok=True)
+    os.makedirs("calibration_curve/Unseen", exist_ok=True)
+
+    def multiclass_ece(y_true, y_prob, num_bins=10):
+        pred = np.argmax(y_prob, axis=1)
+        conf = np.max(y_prob, axis=1)
+        correct = pred == y_true
+
+        bin_indices = np.digitize(conf, np.linspace(0, 1, num_bins + 1))
+        total_in_bin = np.bincount(bin_indices, minlength=num_bins + 1)
+        ece = 0.0
+        for bin_idx in range(1, num_bins + 1):
+            bin_mask = bin_indices == bin_idx
+            if total_in_bin[bin_idx] != 0:
+                bin_acc = np.mean(correct[bin_mask])
+                avg_confidence = np.mean(conf[bin_mask])
+                ece += total_in_bin[bin_idx] * np.abs(avg_confidence - bin_acc)
+        return ece / len(y_true)
+
     for partition_name, X_part, y_part in [("Train", X, y), ("Unseen", X_unseen, y_unseen)]:
-        prob = clf.predict_proba(X_part)
+        non_cal_prob = clf.predict_proba(X_part)
+        cal_prob = cal_clf.predict_proba(X_part)
 
-        # Reliability diagram and expected calibration error
-        calibration_error = []
-        plt.figure(figsize=(10, 10))
-        for i in range(len(classes)):
-            prob_i = prob[:, i]
-            y_i = y_part == classes[i]
-            prob_true, prob_pred = calibration_curve(y_i, prob_i, n_bins=10)
+        non_cal_nll = sklearn.metrics.log_loss(y_part, non_cal_prob, labels=clf.classes_)
+        cal_nll = sklearn.metrics.log_loss(y_part, cal_prob, labels=cal_clf.classes_)
 
-            calibration_error.append(np.mean(np.abs(prob_pred - prob_true)))
+        num_bins = 10
 
-            plt.plot(prob_pred, prob_true, marker="o", label=f"{partition_name} {classes[i]}")
-            if i % 30 == 29:
-                plt.plot([0, 1], [0, 1], linestyle="--", color="black")
-                plt.xlabel("Mean predicted probability")
-                plt.ylabel("Fraction of positives")
-                plt.legend()
-                plt.savefig(f"./calibration_curve/calibration_curve_{partition_name}_{i // 30}.png")
-                plt.close()
-                plt.figure(figsize=(10, 10))
+        for class_idx, class_label in enumerate(classes):
+            y_true = y_part == class_label
+            non_cal_y_prob = non_cal_prob[:, class_idx]
+            cal_y_prob = cal_prob[:, class_idx]
 
-        plt.plot([0, 1], [0, 1], linestyle="--", color="black")
-        plt.xlabel("Mean predicted probability")
-        plt.ylabel("Fraction of positives")
-        plt.legend()
-        plt.savefig(f"./calibration_curve/calibration_curve_{partition_name}_{len(classes) // 30}.png")
-        plt.close()
+            non_cal_plot = CalibrationDisplay.from_predictions(y_true, non_cal_y_prob, n_bins=num_bins)
+            cal_plot = CalibrationDisplay.from_predictions(y_true, cal_y_prob, n_bins=num_bins)
 
-        plt.hist(calibration_error, bins=50)
-        plt.xlabel("Expected Calibration Error")
-        plt.ylabel("Frequency")
-        plt.savefig(f"./calibration_curve/calibration_error_{partition_name}.png")
-        plt.close()
+            fig, ax = plt.subplots()
+            non_cal_plot.plot(ax=ax, label="Non-calibrated")
+            cal_plot.plot(ax=ax, label="Calibrated")
+            ax.set_title(f"Calibration plot for class {class_label}")
+            ax.legend()
+            plt.savefig(f"calibration_curve/{partition_name}/{class_label}.png")
+            plt.close(fig)
 
-        y_pred = clf.predict(X_part)
+        non_cal_overall_ece = multiclass_ece(y_part, non_cal_prob, num_bins=num_bins)
+        cal_overall_ece = multiclass_ece(y_part, cal_prob, num_bins=num_bins)
+
+        non_cal_y_pred = clf.predict(X_part)
+        cal_y_pred = cal_clf.predict(X_part)
         res_part = {}
         res_part["count"] = len(y_part)
         # Note that these evaluation metrics have all been converted to percentages
-        res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
-        res_part["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
-        res_part["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro")
-        res_part["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
-        res_part["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted")
+        res_part["non-cal-accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, non_cal_y_pred)
+        res_part["non-cal-accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, non_cal_y_pred)
+        res_part["non-cal-f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, non_cal_y_pred, average="micro")
+        res_part["non-cal-f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, non_cal_y_pred, average="macro")
+        res_part["non-cal-f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, non_cal_y_pred, average="weighted")
+        res_part["non-cal-ece"] = non_cal_overall_ece
+        res_part["non-cal-nll"] = non_cal_nll
+        res_part["cal-accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, cal_y_pred)
+        res_part["cal-accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, cal_y_pred)
+        res_part["cal-f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="micro")
+        res_part["cal-f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="macro")
+        res_part["cal-f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="weighted")
+        res_part["cal-ece"] = cal_overall_ece
+        res_part["cal-nll"] = cal_nll
         results[partition_name] = res_part
         print(f"\n{partition_name} evaluation results:")
         for k, v in res_part.items():
             if k == "count":
-                print(f"  {k + ' ':.<21s}{v:7d}")
+                print(f"  {k + ' ':.<25s}{v:7d}")
+            elif k.endswith(("ece", "nll")):
+                print(f"  {k + ' ':.<28s} {v:6.4f}")
             else:
-                print(f"  {k + ' ':.<24s} {v:6.2f} %")
-    acc = results["Unseen"]["accuracy"]
+                print(f"  {k + ' ':.<28s} {v:6.2f} %")
+    cal_ece = results["Unseen"]["cal-ece"]
+    cal_nll = results["Unseen"]["cal-nll"]
+    non_cal_ece = results["Unseen"]["non-cal-ece"]
+    non_cal_nll = results["Unseen"]["non-cal-nll"]
     timing_stats["test"] = time.time() - t_start_test
 
     # Save results -------------------------------------------------------------
@@ -254,9 +289,9 @@ def run(config):
     seconds = dt - (hour * 3600) - (minutes * 60)
     print(f"The code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
 
-    with open("KNN_RESULTS.txt", "a") as f:
+    with open("SOFT_KNN_RESULTS.txt", "a") as f:
         model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-        f.write(f"\n{model_name} \t {acc:.4f}")
+        f.write(f"\n{model_name} \t {cal_ece:.4f} \t {cal_nll:.4f} \t {non_cal_ece:.4f} \t {non_cal_nll:.4f}\n")
 
     timing_stats["overall"] = time.time() - t_start
 
@@ -277,7 +312,7 @@ def run(config):
             "run_id",
             "model_output_dir",
         ]
-        job_type = "knn"
+        job_type = "soft_knn"
         wandb.init(
             name=wandb_run_name,
             id=config.run_id,
@@ -292,8 +327,8 @@ def run(config):
         # Log results to wandb ----------------------------------------------------
         wandb.log(
             {
-                **{f"knn/duration/{k}": v for k, v in timing_stats.items()},
-                **{f"knn/{partition}/{k}": v for partition, res in results.items() for k, v in res.items()},
+                **{f"soft_knn/duration/{k}": v for k, v in timing_stats.items()},
+                **{f"soft_knn/{partition}/{k}": v for partition, res in results.items() for k, v in res.items()},
             },
         )
 
