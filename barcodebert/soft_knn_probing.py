@@ -7,6 +7,7 @@ from itertools import product
 
 import pandas as pd
 import sklearn.metrics
+from sklearn.model_selection import train_test_split
 import torch
 import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
@@ -52,7 +53,7 @@ def run(config):
     print()
     print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
 
-    device = torch.device("cuda") if torch.cuda.is_available() else "mps"
+    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
     # Map model parameters to be load to the specified gpu.
@@ -151,10 +152,6 @@ def run(config):
     X_unseen, y_unseen, orders = representations_from_df(
         df_test, df_train, config.target_level, model, tokenizer, config.dataset_name
     )
-    print("Generating embeddings for validation set", flush=True)
-    X_val, y_val, val_orders = representations_from_df(
-        df_val, df_train, config.target_level, model, tokenizer, config.dataset_name
-    )
     print("Generating embeddings for train set", flush=True)
     X, y, train_orders = representations_from_df(
         df_train, df_train, config.target_level, model, tokenizer, config.dataset_name
@@ -188,11 +185,11 @@ def run(config):
         knn_weight = lambda x: np.exp(-(x**2) / (2 * config.sigma**2))
 
     clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric, weights=knn_weight)
-    clf.fit(X, y)
-    timing_stats["train"] = time.time() - t_start_train
+    cal_clf = CalibratedClassifierCV(clf, method=config.calibration_method, cv=config.calibration_folds)
 
-    cal_clf = CalibratedClassifierCV(clf, method="isotonic", cv="prefit")
-    cal_clf.fit(X_val, y_val)
+    timing_stats["train"] = time.time() - t_start_train
+    cal_clf.fit(X, y)
+    clf.fit(X, y)
 
     classes = cal_clf.classes_
 
@@ -400,6 +397,27 @@ def get_parser():
         default=1.0,
         type=float,
         help="Sigma value for Gaussian weight function. Default: %(default)s",
+    )
+    group.add_argument(
+        "--calibration-method",
+        "--calibration_method",
+        default="isotonic",
+        type=str,
+        help="Calibration method to use. Default: %(default)s",
+    )
+    group.add_argument(
+        "--calibration-n-bins",
+        "--calibration_n_bins",
+        default=10,
+        type=int,
+        help="Number of bins to use for calibration. Default: %(default)s",
+    )
+    group.add_argument(
+        "--calibration-folds",
+        "--calibration_folds",
+        default=5,
+        type=int,
+        help="Number of folds to use for calibration. Default: %(default)s",
     )
     return parser
 
