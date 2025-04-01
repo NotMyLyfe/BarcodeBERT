@@ -431,7 +431,6 @@ def get_parser():
     group.add_argument(
         "--calibration-folds",
         "--calibration_folds",
-        default=5,
         type=int,
         help="Number of folds to use for calibration. Default: %(default)s",
     )
