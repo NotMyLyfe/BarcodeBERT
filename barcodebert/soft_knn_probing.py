@@ -22,6 +22,28 @@ from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_fr
 from barcodebert.io import load_pretrained_model
 
 
+def gaussian_weight(distances):
+    """
+    Compute Gaussian weights for kNN based on distances.
+
+    Parameters
+    ----------
+    distances : np.ndarray
+        Distances between points.
+
+    Returns
+    -------
+    np.ndarray
+        Gaussian weights.
+    """
+    std = np.std(distances)
+
+    if std == 0:
+        std = 1e-6
+
+    return np.exp(-(distances**2) / (2 * std**2))
+
+
 def run(config):
     r"""
     Run kNN job, using a single GPU worker to create the embeddings.
@@ -182,7 +204,7 @@ def run(config):
     knn_weight = config.weight
 
     if knn_weight == "gaussian":
-        knn_weight = lambda x: np.exp(-(x**2) / (2 * config.sigma**2))
+        knn_weight = gaussian_weight
 
     clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric, weights=knn_weight)
     cal_clf = CalibratedClassifierCV(clf, method=config.calibration_method, cv=config.calibration_folds)
@@ -240,7 +262,7 @@ def run(config):
             ax.set_title(f"Calibration plot for class {class_label}")
             ax.legend()
             plt.savefig(f"calibration_curve/{partition_name}/{class_label}.png")
-            plt.close(fig)
+            plt.close("all")
 
         non_cal_overall_ece = multiclass_ece(y_part, non_cal_prob, num_bins=num_bins)
         cal_overall_ece = multiclass_ece(y_part, cal_prob, num_bins=num_bins)
@@ -391,12 +413,6 @@ def get_parser():
         default="uniform",
         type=str,
         help="Weight function used in prediction. Default: %(default)s",
-    )
-    group.add_argument(
-        "--sigma",
-        default=1.0,
-        type=float,
-        help="Sigma value for Gaussian weight function. Default: %(default)s",
     )
     group.add_argument(
         "--calibration-method",
