@@ -10,8 +10,10 @@ import sklearn.metrics
 from sklearn.model_selection import train_test_split
 import torch
 import torch.optim
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.calibration import CalibratedClassifierCV, CalibrationDisplay
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils.validation import check_X_y, check_is_fitted, check_array
+from sklearn.metrics import pairwise_distances
 from matplotlib import pyplot as plt
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
@@ -22,26 +24,131 @@ from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_fr
 from barcodebert.io import load_pretrained_model
 
 
-def gaussian_weight(distances):
-    """
-    Compute Gaussian weights for kNN based on distances.
+class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(self, n_neighbors=1, metric="cosine", max_iter=1000, tol=1e-8):
+        self.n_neighbors = n_neighbors
+        self.metric = metric
+        self.max_iter = max_iter
+        self.tol = tol
 
-    Parameters
-    ----------
-    distances : np.ndarray
-        Distances between points.
+    def fit(self, X, y):
+        X, y = check_X_y(X, y)
 
-    Returns
-    -------
-    np.ndarray
-        Gaussian weights.
-    """
-    std = np.std(distances)
+        self.classes_ = np.unique(y)
+        self.X_ = X
+        self.y_ = y
 
-    if std == 0:
-        std = 1e-6
+        return self
 
-    return np.exp(-(distances**2) / (2 * std**2))
+    def _class_matrix(self):
+        M = len(self.classes_)
+        N = len(self.y_)
+        A = np.zeros((M, N), dtype=np.float64)
+        for j, label in enumerate(self.y_):
+            i = np.where(self.classes_ == label)[0][0]
+            A[i, j] = 1.0
+        return A
+
+    def _sigma(self, dist):
+        k = min(self.n_neighbors, len(dist))
+
+        if k == 0:
+            return 1e-8
+
+        std_ = np.std(dist[:k])
+        return std_ if std_ > 0 else 1e-8
+
+    def _row_col_normalize(self, matrix):
+        R = matrix.copy()
+
+        for _ in range(self.max_iter):
+            R_prev = R.copy()
+
+            row_sums = R.sum(axis=1, keepdims=True)
+            R /= row_sums
+
+            col_sums = R.sum(axis=0, keepdims=True)
+            R /= col_sums
+
+            if np.max(np.abs(R - R_prev)) < self.tol:
+                break
+
+        return R
+
+    def _fuzzy_perm(self, distances, sigma):
+        N = len(distances)
+        alpha = np.zeros((N, N), dtype=np.float64)
+
+        x_min = np.min(distances) - 3.0 * sigma
+        x_max = np.max(distances) + 3.0 * sigma
+        vals = np.linspace(x_min, x_max, 1000)
+        dx = vals[1] - vals[0]
+
+        def gaussian(x, center, sigma):
+            return np.exp(-0.5 * ((x - center) / sigma) ** 2)
+
+        fuzzy_set = []
+        for d in distances:
+            fuzzy_set.append(gaussian(vals, d, sigma))
+        fuzzy_set = np.array(fuzzy_set)
+
+        for i in range(N):
+            for j in range(N):
+                alpha[i, j] = np.sum(fuzzy_set[i] * fuzzy_set[j]) * dx
+
+        alpha = self._row_col_normalize(alpha)
+
+        return alpha
+
+    def predict(self, X):
+        check_is_fitted(self)
+        X = check_array(X)
+
+        A = self._class_matrix()
+
+        y_pred = []
+
+        for x in X:
+            dists = pairwise_distances(x.reshape(1, -1), self.X_, metric=self.metric).flatten()
+
+            sigma = self._sigma(dists)
+
+            R = self._fuzzy_perm(dists, sigma)
+
+            w = np.zeros_like(self.classes_, dtype=np.float64)
+            w[: self.n_neighbors] = 1.0
+
+            wR = np.dot(w, R)
+            votes = np.dot(wR, A)
+
+            y_pred.append(self.classes_[np.argmax(votes)])
+
+        return np.array(y_pred)
+
+    def predict_proba(self, X):
+        check_is_fitted(self)
+        X = check_array(X)
+
+        A = self._class_matrix()
+
+        y_prob = []
+
+        for x in X:
+            dists = pairwise_distances(x.reshape(1, -1), self.X_, metric=self.metric).flatten()
+
+            sigma = self._sigma(dists)
+
+            R = self._fuzzy_perm(dists, sigma)
+
+            w = np.zeros_like(self.classes_, dtype=np.float)
+            w[: self.n_neighbors] = 1.0
+
+            wR = np.dot(w, R)
+            votes = np.dot(wR, A)
+
+            y_prob.append(votes / np.sum(votes))
+
+        return np.array(y_prob)
 
 
 def run(config):
@@ -75,7 +182,7 @@ def run(config):
     print()
     print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
 
-    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+    device = torch.device("cuda") if torch.cuda.is_available() else "mps"
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
     # Map model parameters to be load to the specified gpu.
@@ -201,12 +308,7 @@ def run(config):
     # Fit ---------------------------------------------------------------------
     t_start_train = time.time()
 
-    knn_weight = config.weight
-
-    if knn_weight == "gaussian":
-        knn_weight = gaussian_weight
-
-    clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric, weights=knn_weight)
+    clf = SoftKNNClassifier(n_neighbors=config.n_neighbors, metric=config.metric)
     cal_clf = CalibratedClassifierCV(clf, method=config.calibration_method, cv=config.calibration_folds)
 
     timing_stats["train"] = time.time() - t_start_train
