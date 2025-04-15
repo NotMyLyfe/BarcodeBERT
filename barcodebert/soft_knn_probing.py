@@ -17,6 +17,7 @@ from sklearn.metrics import pairwise_distances
 from matplotlib import pyplot as plt
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
+from joblib import Parallel, delayed
 import numpy as np
 
 from barcodebert import utils
@@ -25,7 +26,7 @@ from barcodebert.io import load_pretrained_model
 
 
 class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, n_neighbors=1, metric="cosine", max_iter=1000, tol=1e-8):
+    def __init__(self, n_neighbors=1, metric="cosine", max_iter=1000, tol=1e-6):
         self.n_neighbors = n_neighbors
         self.metric = metric
         self.max_iter = max_iter
@@ -38,16 +39,13 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         self.X_ = X
         self.y_ = y
 
+        self.A_ = self._class_matrix()
+
         return self
 
     def _class_matrix(self):
-        M = len(self.classes_)
-        N = len(self.y_)
-        A = np.zeros((M, N), dtype=np.float64)
-        for j, label in enumerate(self.y_):
-            i = np.where(self.classes_ == label)[0][0]
-            A[i, j] = 1.0
-        return A
+        indices = np.searchsorted(self.classes_, self.y_)
+        return np.eye(len(self.classes_), dtype=np.float64)[indices]
 
     def _sigma(self, dist):
         k = min(self.n_neighbors, len(dist))
@@ -59,96 +57,62 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         return std_ if std_ > 0 else 1e-8
 
     def _row_col_normalize(self, matrix):
-        R = matrix.copy()
+        print("Row and column normalization")
 
+        # Sinkhorn-Knopp algorithm for matrix normalization
         for _ in range(self.max_iter):
-            R_prev = R.copy()
+            col_sum = np.sum(matrix, axis=0, keepdims=True)
+            col_sum[col_sum == 0] = 1
+            matrix /= col_sum
 
-            row_sums = R.sum(axis=1, keepdims=True)
-            R /= row_sums
+            row_sum = np.sum(matrix, axis=1, keepdims=True)
+            row_sum[row_sum == 0] = 1
+            matrix /= row_sum
 
-            col_sums = R.sum(axis=0, keepdims=True)
-            R /= col_sums
-
-            if np.max(np.abs(R - R_prev)) < self.tol:
+            if np.max(np.abs(col_sum - 1)) < self.tol and np.max(np.abs(row_sum - 1)) < self.tol:
                 break
-
-        return R
+        print("Row and column normalization done")
+        return matrix
 
     def _fuzzy_perm(self, distances, sigma):
-        N = len(distances)
-        alpha = np.zeros((N, N), dtype=np.float64)
+        sorted_dist = np.sort(distances)
+        diff = distances[:, None] - sorted_dist[None, :]
+        alpha = np.exp(-(diff**2) / (8 * sigma**2))
 
-        x_min = np.min(distances) - 3.0 * sigma
-        x_max = np.max(distances) + 3.0 * sigma
-        vals = np.linspace(x_min, x_max, 1000)
-        dx = vals[1] - vals[0]
+        return self._row_col_normalize(alpha)
 
-        def gaussian(x, center, sigma):
-            return np.exp(-0.5 * ((x - center) / sigma) ** 2)
+    def _vote_one(self, x):
+        dists = pairwise_distances(x.reshape(1, -1), self.X_, metric=self.metric).flatten()
+        sigma = self._sigma(dists)
 
-        fuzzy_set = []
-        for d in distances:
-            fuzzy_set.append(gaussian(vals, d, sigma))
-        fuzzy_set = np.array(fuzzy_set)
+        R = self._fuzzy_perm(dists, sigma)
 
-        for i in range(N):
-            for j in range(N):
-                alpha[i, j] = np.sum(fuzzy_set[i] * fuzzy_set[j]) * dx
+        w = np.zeros((len(self.X_),), dtype=np.float64)
+        w[: self.n_neighbors] = 1.0
 
-        alpha = self._row_col_normalize(alpha)
+        return w.T @ R @ self.A_
 
-        return alpha
+    def _predict_one(self, x):
+        votes = self._vote_one(x)
+        return np.argmax(votes)
+
+    def _predict_proba_one(self, x):
+        votes = self._vote_one(x)
+        return votes / np.sum(votes)
 
     def predict(self, X):
         check_is_fitted(self)
         X = check_array(X)
 
-        A = self._class_matrix()
-
-        y_pred = []
-
-        for x in X:
-            dists = pairwise_distances(x.reshape(1, -1), self.X_, metric=self.metric).flatten()
-
-            sigma = self._sigma(dists)
-
-            R = self._fuzzy_perm(dists, sigma)
-
-            w = np.zeros_like(self.classes_, dtype=np.float64)
-            w[: self.n_neighbors] = 1.0
-
-            wR = np.dot(w, R)
-            votes = np.dot(wR, A)
-
-            y_pred.append(self.classes_[np.argmax(votes)])
-
-        return np.array(y_pred)
+        pred = Parallel(n_jobs=-1)(delayed(self._predict_one)(x) for x in X)
+        return np.array(pred)
 
     def predict_proba(self, X):
         check_is_fitted(self)
         X = check_array(X)
 
-        A = self._class_matrix()
-
-        y_prob = []
-
-        for x in X:
-            dists = pairwise_distances(x.reshape(1, -1), self.X_, metric=self.metric).flatten()
-
-            sigma = self._sigma(dists)
-
-            R = self._fuzzy_perm(dists, sigma)
-
-            w = np.zeros_like(self.classes_, dtype=np.float)
-            w[: self.n_neighbors] = 1.0
-
-            wR = np.dot(w, R)
-            votes = np.dot(wR, A)
-
-            y_prob.append(votes / np.sum(votes))
-
-        return np.array(y_prob)
+        proba = Parallel(n_jobs=-1)(delayed(self._predict_proba_one)(x) for x in X)
+        return np.array(proba)
 
 
 def run(config):
@@ -182,7 +146,7 @@ def run(config):
     print()
     print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
 
-    device = torch.device("cuda") if torch.cuda.is_available() else "mps"
+    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
     # Map model parameters to be load to the specified gpu.
@@ -309,13 +273,13 @@ def run(config):
     t_start_train = time.time()
 
     clf = SoftKNNClassifier(n_neighbors=config.n_neighbors, metric=config.metric)
-    cal_clf = CalibratedClassifierCV(clf, method=config.calibration_method, cv=config.calibration_folds)
+    # cal_clf = CalibratedClassifierCV(clf, method=config.calibration_method, cv=config.calibration_folds)
 
     timing_stats["train"] = time.time() - t_start_train
-    cal_clf.fit(X, y)
+    # cal_clf.fit(X, y)
     clf.fit(X, y)
 
-    classes = cal_clf.classes_
+    # classes = cal_clf.classes_
 
     # Evaluate ----------------------------------------------------------------
     t_start_test = time.time()
@@ -342,35 +306,35 @@ def run(config):
         return ece / len(y_true)
 
     for partition_name, X_part, y_part in [("Train", X, y), ("Unseen", X_unseen, y_unseen)]:
-        non_cal_prob = clf.predict_proba(X_part)
-        cal_prob = cal_clf.predict_proba(X_part)
+        # non_cal_prob = clf.predict_proba(X_part)
+        # cal_prob = cal_clf.predict_proba(X_part)
 
-        non_cal_nll = sklearn.metrics.log_loss(y_part, non_cal_prob, labels=clf.classes_)
-        cal_nll = sklearn.metrics.log_loss(y_part, cal_prob, labels=cal_clf.classes_)
+        # non_cal_nll = sklearn.metrics.log_loss(y_part, non_cal_prob, labels=clf.classes_)
+        # cal_nll = sklearn.metrics.log_loss(y_part, cal_prob, labels=cal_clf.classes_)
 
-        num_bins = 10
+        # num_bins = 10
 
-        for class_idx, class_label in enumerate(classes):
-            y_true = y_part == class_label
-            non_cal_y_prob = non_cal_prob[:, class_idx]
-            cal_y_prob = cal_prob[:, class_idx]
+        # for class_idx, class_label in enumerate(classes):
+        #     y_true = y_part == class_label
+        #     non_cal_y_prob = non_cal_prob[:, class_idx]
+        #     cal_y_prob = cal_prob[:, class_idx]
 
-            non_cal_plot = CalibrationDisplay.from_predictions(y_true, non_cal_y_prob, n_bins=num_bins)
-            cal_plot = CalibrationDisplay.from_predictions(y_true, cal_y_prob, n_bins=num_bins)
+        #     non_cal_plot = CalibrationDisplay.from_predictions(y_true, non_cal_y_prob, n_bins=num_bins)
+        #     cal_plot = CalibrationDisplay.from_predictions(y_true, cal_y_prob, n_bins=num_bins)
 
-            fig, ax = plt.subplots()
-            non_cal_plot.plot(ax=ax, label="Non-calibrated")
-            cal_plot.plot(ax=ax, label="Calibrated")
-            ax.set_title(f"Calibration plot for class {class_label}")
-            ax.legend()
-            plt.savefig(f"calibration_curve/{partition_name}/{class_label}.png")
-            plt.close("all")
+        #     fig, ax = plt.subplots()
+        #     non_cal_plot.plot(ax=ax, label="Non-calibrated")
+        #     cal_plot.plot(ax=ax, label="Calibrated")
+        #     ax.set_title(f"Calibration plot for class {class_label}")
+        #     ax.legend()
+        #     plt.savefig(f"calibration_curve/{partition_name}/{class_label}.png")
+        #     plt.close("all")
 
-        non_cal_overall_ece = multiclass_ece(y_part, non_cal_prob, num_bins=num_bins)
-        cal_overall_ece = multiclass_ece(y_part, cal_prob, num_bins=num_bins)
+        # non_cal_overall_ece = multiclass_ece(y_part, non_cal_prob, num_bins=num_bins)
+        # cal_overall_ece = multiclass_ece(y_part, cal_prob, num_bins=num_bins)
 
         non_cal_y_pred = clf.predict(X_part)
-        cal_y_pred = cal_clf.predict(X_part)
+        # cal_y_pred = cal_clf.predict(X_part)
         res_part = {}
         res_part["count"] = len(y_part)
         # Note that these evaluation metrics have all been converted to percentages
@@ -379,14 +343,14 @@ def run(config):
         res_part["non-cal-f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, non_cal_y_pred, average="micro")
         res_part["non-cal-f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, non_cal_y_pred, average="macro")
         res_part["non-cal-f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, non_cal_y_pred, average="weighted")
-        res_part["non-cal-ece"] = non_cal_overall_ece
+        # res_part["non-cal-ece"] = non_cal_overall_ece
         res_part["non-cal-nll"] = non_cal_nll
-        res_part["cal-accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, cal_y_pred)
-        res_part["cal-accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, cal_y_pred)
-        res_part["cal-f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="micro")
-        res_part["cal-f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="macro")
-        res_part["cal-f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="weighted")
-        res_part["cal-ece"] = cal_overall_ece
+        # res_part["cal-accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, cal_y_pred)
+        # res_part["cal-accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, cal_y_pred)
+        # res_part["cal-f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="micro")
+        # res_part["cal-f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="macro")
+        # res_part["cal-f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, cal_y_pred, average="weighted")
+        # res_part["cal-ece"] = cal_overall_ece
         res_part["cal-nll"] = cal_nll
         results[partition_name] = res_part
         print(f"\n{partition_name} evaluation results:")
