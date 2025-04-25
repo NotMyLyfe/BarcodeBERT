@@ -29,6 +29,7 @@ from barcodebert.io import load_pretrained_model
 class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
+        device="cpu",
         n_neighbors=1,
         metric="cosine",
         max_iter=1000,
@@ -36,6 +37,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         epsilon=1e-8,
         log_iter=1000,
         print_log=False,
+        n_jobs=None,
     ):
         self.n_neighbors = n_neighbors
         self.metric = metric
@@ -44,17 +46,19 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         self.epsilon = epsilon
         self.log_iter = log_iter
         self.print_log = print_log
+        self.n_jobs = n_jobs
+        self.device = device
 
     def fit(self, X, y):
         X, y = check_X_y(X, y)
 
-        self.classes_ = torch.unique(y)
+        self.classes_ = np.unique(y)
         self.X_ = X
         self.y_ = y
 
         self.A_ = self._class_matrix()
 
-        self.w = torch.zeros((len(self.X_), 1), dtype=torch.float64)
+        self.w = np.zeros((len(self.X_), 1), dtype=np.float64)
         self.w[: self.n_neighbors] = 1.0
         self.w = self.w.T
 
@@ -64,9 +68,9 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         N = len(self.y_)
         M = len(self.classes_)
 
-        A = torch.zeros((N, M), dtype=torch.float64)
+        A = np.zeros((N, M), dtype=np.float64)
         for i, label in enumerate(self.y_):
-            j = torch.where(self.classes_ == label)[0][0]
+            j = np.where(self.classes_ == label)[0][0]
             A[i, j] = 1.0
         return A
 
@@ -76,7 +80,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         if k == 0:
             return 1e-8
 
-        std_ = torch.std(dist[:k])
+        std_ = np.std(dist[:k])
         return std_ if std_ > 0 else 1e-8
 
     def _row_col_normalize(self, matrix):
@@ -85,16 +89,24 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         # where C is the cost matrix and K is the kernel matrix
 
         # Regularization is set to 1, so that K = exp(-C), and C = -log(M), thus K = M
-        cost_matrix = -torch.log(matrix + self.epsilon)
+
+        # Original paper ask to regularize until matrix converges, it also calls for each row and column
+        # to be normalized to 1 as well, thus Sinkhorn-Knopp algorithm is used as it converges all
+        # rows and columns to 1
+
+        # Accelerate using GPU with PyTorch backend on POT
+        matrix = torch.tensor(matrix + self.epsilon, dtype=torch.float64, device=self.device)
+        cost_matrix = -torch.log(matrix)
 
         R = ot.sinkhorn([], [], cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
 
-        return R
+        # Need to coerce the matrix to np.ndarray
+        return R.cpu().detach().numpy()
 
     def _fuzzy_perm(self, distances, sigma):
-        sorted_dist = torch.sort(distances)
-        diff = distances[:, None] - sorted_dist.values[None, :]
-        alpha = torch.exp(-(diff**2) / (8 * sigma**2))
+        sorted_dist = np.sort(distances)
+        diff = distances[:, None] - sorted_dist[None, :]
+        alpha = np.exp(-(diff**2) / (8 * sigma**2))
 
         return self._row_col_normalize(alpha)
 
@@ -112,7 +124,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
             print(f"Predicting {i} / {pred_len}...", flush=True)
 
         votes = self._vote_one(x)
-        return torch.argmax(votes)
+        return np.argmax(votes)
 
     def _predict_proba_one(self, x, i, pred_len, print_log=False):
         i += 1
@@ -120,20 +132,24 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
             print(f"Predicting {i} / {pred_len}...", flush=True)
 
         votes = self._vote_one(x)
-        return votes / torch.sum(votes)
+        return votes / np.sum(votes)
 
     def predict(self, X, print_log=False):
         check_is_fitted(self)
         X = check_array(X)
 
-        pred = Parallel(n_jobs=-1)(delayed(self._predict_one)(x, i, len(X), print_log) for i, x in enumerate(X))
+        pred = Parallel(n_jobs=self.n_jobs)(
+            delayed(self._predict_one)(x, i, len(X), print_log) for i, x in enumerate(X)
+        )
         return np.array(pred)
 
     def predict_proba(self, X, print_log=False):
         check_is_fitted(self)
         X = check_array(X)
 
-        proba = Parallel(n_jobs=-1)(delayed(self._predict_proba_one)(x, i, len(X), print_log) for i, x in enumerate(X))
+        proba = Parallel(n_jobs=self.n_jobs)(
+            delayed(self._predict_proba_one)(x, i, len(X), print_log) for i, x in enumerate(X)
+        )
         return np.array(proba)
 
 
@@ -294,12 +310,9 @@ def run(config):
     # Fit ---------------------------------------------------------------------
     t_start_train = time.time()
 
-    X = torch.tensor(X, device=device)
-    X_unseen = torch.tensor(X_unseen, device=device)
-    y = torch.tensor(y, device=device)
-    y_unseen = torch.tensor(y_unseen, device=device)
-
-    clf = SoftKNNClassifier(n_neighbors=config.n_neighbors, metric=config.metric, print_log=True)
+    clf = SoftKNNClassifier(
+        n_neighbors=config.n_neighbors, metric=config.metric, print_log=True, n_jobs=config.soft_knn_jobs, device=device
+    )
     cal_clf = CalibratedClassifierCV(clf, method=config.calibration_method, cv=config.calibration_folds)
 
     timing_stats["train"] = time.time() - t_start_train
@@ -526,6 +539,20 @@ def get_parser():
         "--calibration_folds",
         type=int,
         help="Number of folds to use for calibration. Default: %(default)s",
+    )
+    group.add_argument(
+        "--calibration-curve-dir",
+        "--calibration_curve_dir",
+        type=str,
+        default="calibration_curve",
+        help="Directory to save calibration curves. Default: %(default)s",
+    )
+    group.add_argument(
+        "--soft-knn-jobs",
+        "--soft_knn_jobs",
+        type=int,
+        default=None,
+        help="Number of jobs to use for soft kNN. Default: %(default)s",
     )
     return parser
 
