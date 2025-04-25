@@ -10,6 +10,7 @@ omegaconf==2.3+computecanada
 opt-einsum==3.3+computecanada
 pandas==2.1.1+computecanada
 peft==0.5+computecanada
+pot==0.9.0+computecanada
 scikit-learn==1.3+computecanada
 scipy==1.12+computecanada
 seaborn
