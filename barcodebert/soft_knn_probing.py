@@ -38,6 +38,8 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         log_iter=1000,
         print_log=False,
         n_jobs=None,
+        torch_dtype=torch.float32,
+        np_dtype=np.float64,
     ):
         self.n_neighbors = n_neighbors
         self.metric = metric
@@ -48,6 +50,8 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         self.print_log = print_log
         self.n_jobs = n_jobs
         self.device = device
+        self.torch_dtype = torch_dtype
+        self.np_dtype = np_dtype
 
     def fit(self, X, y):
         X, y = check_X_y(X, y)
@@ -58,7 +62,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
 
         self.A_ = self._class_matrix()
 
-        self.w = np.zeros((len(self.X_), 1), dtype=np.float64)
+        self.w = np.zeros((len(self.X_), 1), dtype=self.np_dtype)
         self.w[: self.n_neighbors] = 1.0
         self.w = self.w.T
 
@@ -68,7 +72,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         N = len(self.y_)
         M = len(self.classes_)
 
-        A = np.zeros((N, M), dtype=np.float64)
+        A = np.zeros((N, M), dtype=self.np_dtype)
         for i, label in enumerate(self.y_):
             j = np.where(self.classes_ == label)[0][0]
             A[i, j] = 1.0
@@ -95,7 +99,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         # rows and columns to 1
 
         # Accelerate using GPU with PyTorch backend on POT
-        matrix = torch.tensor(matrix + self.epsilon, dtype=torch.float64, device=self.device)
+        matrix = torch.tensor(matrix + self.epsilon, dtype=self.torch_dtype, device=self.device)
         cost_matrix = -torch.log(matrix)
 
         R = ot.sinkhorn([], [], cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
