@@ -102,6 +102,12 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         matrix = torch.tensor(matrix + self.epsilon, dtype=self.torch_dtype, device=self.device)
         cost_matrix = -torch.log(matrix)
 
+        # Memory might exceed if the matrix is too large, need to clear the cache
+        if torch.cuda.is_available() and self.device.type == "cuda":
+            torch.cuda.empty_cache()
+            if self.print_log:
+                print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
+
         R = ot.sinkhorn([], [], cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
 
         # Need to coerce the matrix to np.ndarray
