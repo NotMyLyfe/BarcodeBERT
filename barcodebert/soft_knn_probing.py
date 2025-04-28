@@ -99,14 +99,16 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         # rows and columns to 1
 
         # Accelerate using GPU with PyTorch backend on POT
-        matrix = torch.tensor(matrix + self.epsilon, dtype=self.torch_dtype, device=self.device)
+        matrix = torch.tensor(matrix + self.epsilon, dtype=self.torch_dtype)
         cost_matrix = -torch.log(matrix)
 
         # Memory might exceed if the matrix is too large, need to clear the cache
-        if torch.cuda.is_available() and self.device.type == "cuda":
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
             if self.print_log:
                 print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
+
+        cost_matrix = cost_matrix.to(self.device)
 
         R = ot.sinkhorn([], [], cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
 
