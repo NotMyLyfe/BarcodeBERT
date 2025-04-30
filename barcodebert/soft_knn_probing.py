@@ -110,7 +110,10 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
 
         cost_matrix = cost_matrix.to(self.device)
 
-        R = ot.sinkhorn([], [], cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
+        a = torch.full((cost_matrix.shape[0],), 1.0 / cost_matrix.shape[0], dtype=self.torch_dtype).to(self.device)
+        b = torch.full((cost_matrix.shape[1],), 1.0 / cost_matrix.shape[1], dtype=self.torch_dtype).to(self.device)
+
+        R = ot.sinkhorn(a, b, cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
 
         # Need to coerce the matrix to np.ndarray
         return R.cpu().detach().numpy()
