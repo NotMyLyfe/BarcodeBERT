@@ -49,7 +49,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         self.log_iter = log_iter
         self.print_log = print_log
         self.n_jobs = n_jobs
-        self.device = device
+        self.device = torch.device(device)
         self.torch_dtype = torch_dtype
         self.np_dtype = np_dtype
 
@@ -87,7 +87,15 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         std_ = np.std(dist[:k])
         return std_ if std_ > 0 else 1e-8
 
-    def _row_col_normalize(self, matrix):
+    def _row_col_normalize(self, matrix, mixed_precision=True):
+        # Memory might exceed if the matrix is too large, need to clear the cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if self.print_log:
+                print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
+
+        torch_type = torch.float16 if mixed_precision else torch.float32
+
         # Sinkhorn-Knopp algorithm
         # Need to convert matrix into a cost matrix, as POT converts it internally to K = exp(-C / reg)
         # where C is the cost matrix and K is the kernel matrix
@@ -99,21 +107,14 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         # rows and columns to 1
 
         # Accelerate using GPU with PyTorch backend on POT
-        matrix = torch.tensor(matrix + self.epsilon, dtype=self.torch_dtype)
-        cost_matrix = -torch.log(matrix)
+        with torch.autocast(device_type=self.device.type, dtype=torch_type, enabled=mixed_precision):
+            cost_matrix = torch.tensor(matrix + self.epsilon, dtype=torch_type, device=self.device)
+            cost_matrix = -torch.log(cost_matrix)
 
-        # Memory might exceed if the matrix is too large, need to clear the cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            if self.print_log:
-                print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
+            a = torch.full((cost_matrix.shape[0],), 1.0 / cost_matrix.shape[0], dtype=torch_type).to(self.device)
+            b = torch.full((cost_matrix.shape[1],), 1.0 / cost_matrix.shape[1], dtype=torch_type).to(self.device)
 
-        cost_matrix = cost_matrix.to(self.device)
-
-        a = torch.full((cost_matrix.shape[0],), 1.0 / cost_matrix.shape[0], dtype=self.torch_dtype).to(self.device)
-        b = torch.full((cost_matrix.shape[1],), 1.0 / cost_matrix.shape[1], dtype=self.torch_dtype).to(self.device)
-
-        R = ot.sinkhorn(a, b, cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
+            R = ot.sinkhorn(a, b, cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
 
         # Need to coerce the matrix to np.ndarray
         return R.cpu().detach().numpy()
