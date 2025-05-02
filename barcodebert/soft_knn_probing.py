@@ -49,7 +49,7 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         self.log_iter = log_iter
         self.print_log = print_log
         self.n_jobs = n_jobs
-        self.device = torch.device(device)
+        self.device = device
         self.torch_dtype = torch_dtype
         self.np_dtype = np_dtype
 
@@ -107,12 +107,12 @@ class SoftKNNClassifier(BaseEstimator, ClassifierMixin):
         # rows and columns to 1
 
         # Accelerate using GPU with PyTorch backend on POT
-        with torch.autocast(device_type=self.device.type, dtype=torch_type, enabled=mixed_precision):
+        with torch.autocast(device_type=torch.device(self.device).type, dtype=torch_type, enabled=mixed_precision):
             cost_matrix = torch.tensor(matrix + self.epsilon, dtype=torch_type, device=self.device)
             cost_matrix = -torch.log(cost_matrix)
 
-            a = torch.full((cost_matrix.shape[0],), 1.0 / cost_matrix.shape[0], dtype=torch_type).to(self.device)
-            b = torch.full((cost_matrix.shape[1],), 1.0 / cost_matrix.shape[1], dtype=torch_type).to(self.device)
+            a = torch.full((cost_matrix.shape[0],), 1.0 / cost_matrix.shape[0], dtype=torch_type, device=self.device)
+            b = torch.full((cost_matrix.shape[1],), 1.0 / cost_matrix.shape[1], dtype=torch_type, device=self.device)
 
             R = ot.sinkhorn(a, b, cost_matrix, 1, numItermax=self.max_iter, stopThr=self.tol)
 
